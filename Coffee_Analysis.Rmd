@@ -1,0 +1,487 @@
+---
+title: "Estimating Coffee Ratings - Dataset from Coffee Quality Institute"
+author: "Abraham Yang, Erica Nakabayashi, Melissa Olivera"
+date: '2023-04-21'
+output: 
+  pdf_document:
+    keep_tex: yes
+header-includes:
+  - \usepackage{titling}
+  - \pretitle{\vspace{0.2cm}\begin{flushleft}\fontsize{14pt}{16pt}\selectfont\textbf}
+  - \posttitle{\par\end{flushleft}\vspace{-0.1cm}}
+  - \usepackage{sectsty}
+
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+
+```{r setup, include=FALSE, echo=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stargazer)
+```
+
+```{r load packages and set options, include=FALSE, echo=FALSE,message=FALSE}
+
+library(tidyverse)
+library(magrittr)
+library(stargazer)
+library(sandwich)
+library(lmtest)
+library(patchwork)
+library(car)
+library(gridExtra)
+library(caret)
+library(moments)
+
+theme_set(theme_bw())
+
+```
+
+```{r chunk 1, message = FALSE, include=FALSE,message=FALSE}
+#Upload main dataset
+merged_data_cleaned <- read.csv("merged_data_cleaned.csv")
+coffee_df<-merged_data_cleaned
+
+#Fixing country names for equivalency 
+colnames(coffee_df)[4] <- "country"
+coffee_df$country[coffee_df$country == "Tanzania, United Republic Of"] <- "Tanzania"
+coffee_df$country[coffee_df$country == "United States (Hawaii)"] <- "United States"
+coffee_df$country[coffee_df$country == "United States (Puerto Rico)"] <- "United States"
+coffee_df$country[coffee_df$country == "Cote d?Ivoire"] <- "Ivory Coast"
+
+#Import Tropical Dataset - https://worldpopulationreview.com/country-rankings/tropical-countries
+tropicalcountries <- read.csv("data_tropical.csv")
+tropicalcountries<- tropicalcountries %>% 
+  mutate(Tropical = if_else(fullyTropical =="TRUE" ,
+                                   "FullyTropical",
+                                   "PartiallyTropical"))
+#add Japan - not tropical
+#tropicalcountries[nrow(tropicalcountries)+1,] = tropicalcountries[nrow(tropicalcountries),]
+#tropicalcountries[nrow(tropicalcountries),5] = "Japan"
+#tropicalcountries[nrow(tropicalcountries),17] = "NotTropical"
+#tropicalcountries[nrow(tropicalcountries),9] = "Asia"
+#tropicalcountries[nrow(tropicalcountries),10] = "Eastern_Asia"
+
+#First merge
+coffee_tropical_merged = merge(x = coffee_df, y = tropicalcountries, by = "country")
+
+
+#Import Average Altitude Dataset - From Wikipedia
+avg_alt <- read.csv("averagealtitude.csv")
+colnames(avg_alt)[1] <- "country"
+avg_alt[nrow(avg_alt)+1,] = avg_alt[nrow(avg_alt),]
+avg_alt[nrow(avg_alt),1] = "Ivory Coast"
+avg_alt[nrow(avg_alt),2] = 250
+
+
+#Second merge
+coffee_tropical_avgalt_merged = merge(x = coffee_tropical_merged, y = avg_alt, by = "country")
+
+```
+
+```{r r chunk 2, out.width="70%", align = 'center', fig.cap="distribution", echo=FALSE, include=FALSE,message=FALSE}
+par(mfrow = c(2, 1))
+
+hist(coffee_tropical_avgalt_merged$Total.Cup.Points, which=3,ylab=NULL,main=NULL)
+hist(coffee_tropical_avgalt_merged$altitude_low_meters, which=3,ylab=NULL,main=NULL)
+
+```
+
+```{r r chunk 3, include=FALSE, echo=FALSE,message=FALSE}
+df <- subset(coffee_tropical_avgalt_merged,Total.Cup.Points > 0) #clean invalid score
+df <- subset(df, altitude_low_meters < 8848) #clean altitude upperbound
+df <- subset(df, altitude_low_meters/Elevation > 0.2) #clean altitude lowerbound
+```
+
+```{r r chunk 4, include=FALSE, echo=FALSE,message=FALSE}
+df <- df[,c("country", "Species", "Producer", "Harvest.Year", "Expiration", "Category.One.Defects", "Category.Two.Defects", "Total.Cup.Points", "altitude_low_meters", "Variety", "Species", "subregion", "Tropical")]
+
+glimpse(df)
+```
+
+```{r r chunk 5, out.width="70%", align = 'center', fig.cap="Homoskedastic Errors on Residuals vs Fitted", echo=FALSE, include=FALSE,message=FALSE}
+
+hist(df$Total.Cup.Points, which=3,ylab=NULL,main=NULL)
+hist(df$altitude_low_meters, which=3,ylab=NULL,main=NULL)
+
+```
+
+```{r r chunk 6, include=FALSE, echo=FALSE,message=FALSE}
+ggplot(df, aes(x = altitude_low_meters, 
+                 y = Total.Cup.Points)) + 
+  geom_point( alpha = 0.8, size = 1) +
+  geom_smooth(method = "lm", se = F) +
+  ylab("Coffee rating") +
+  xlab("Coffee growing altitude (meters)") +
+  labs(title = 'Relationship between altitude and coffee ratings',
+    subtitle = '{closest_state}')
+```
+
+```{r r chunk 7, echo=FALSE, include=FALSE,message=FALSE}
+ggplot(df, aes(x = log(altitude_low_meters), 
+                 y = Total.Cup.Points)) + 
+  geom_point( alpha = 0.8, size = 1) +
+  geom_smooth(method = "lm", se = F) +
+  ylab("Coffee rating") +
+  xlab("Coffee growing altitude (meters)") +
+  labs(title = 'Relationship between altitude and coffee ratings',
+    subtitle = '{closest_state}')
+```
+
+```{r r chunk 8, echo=FALSE, include=FALSE,message=FALSE}
+df2 <- df %>% count(country, sort = TRUE)
+head(df2,33)
+
+df3 <- df2 %>% filter(n<30)
+head(df3,33)
+
+df_ <- df %>% 
+  filter(!is.na(country),
+         Total.Cup.Points > 10) %>% 
+  mutate(country = fct_lump(country, 10), sort = TRUE)
+
+df_ %>% 
+  mutate(country = fct_reorder(country, Total.Cup.Points)) %>% 
+  ggplot(aes(Total.Cup.Points, country)) +
+  geom_boxplot()
+
+```
+
+```{r r chunk 9, echo=FALSE, include=FALSE,message=FALSE}
+df2 <- df %>% count(subregion, sort = TRUE)
+head(df2,33)
+
+df_ <- df %>% 
+  filter(!is.na(subregion),
+         Total.Cup.Points > 10) %>% 
+  mutate(region = fct_lump(subregion, 10), sort = TRUE)
+
+df_ %>% 
+  mutate(region = fct_reorder(subregion, Total.Cup.Points)) %>% 
+  ggplot(aes(Total.Cup.Points, subregion)) +
+  geom_boxplot()
+
+```
+
+```{r r chunk 10, echo=FALSE, include=FALSE,message=FALSE}
+df <- subset(df, subregion != "Caribbean") #clean invalid score
+df <- subset(df, subregion != "WEAfrica") #clean invalid score
+df <- subset(df, subregion != "Melanesia") #clean invalid score
+df <- subset(df, subregion != "NOAmerica") #clean invalid score
+df <- subset(df, subregion != "Sasia") #clean invalid score
+
+df %>% count(subregion, sort = TRUE)
+```
+
+```{r dr chunk 11, echo=FALSE, include=FALSE,message=FALSE}
+library(splitstackshape)
+
+set.seed(19108379) 
+df$rowId <- 1:nrow(df)
+train <- stratified(df,"subregion",size =0.3)
+test <- df[!(df$rowId %in% train$rowId),]
+
+```
+
+```{r load robust standard error puller, echo=FALSE, include=FALSE,message=FALSE}
+rse <- function(model) { 
+  sqrt(diag(vcovHC(model)))
+}
+```
+
+```{r r chunk 12, echo=FALSE, include=FALSE,message=FALSE}
+v1<-lm(Total.Cup.Points ~ altitude_low_meters, data = train)
+v2<-lm(Total.Cup.Points ~ log(altitude_low_meters), data = train)
+
+v3<-lm(Total.Cup.Points ~ altitude_low_meters + subregion, data=train) #adding Variables
+
+v4<-lm(Total.Cup.Points ~ altitude_low_meters + Tropical, data=train) #adding Variables
+
+v5<-lm(Total.Cup.Points ~ altitude_low_meters + subregion + Tropical, data=train) #adding Variables
+
+v6<-lm(Total.Cup.Points ~ altitude_low_meters + subregion + Tropical + subregion*Tropical, data=train) #adding interaction term
+
+```
+
+```{r r chunk 13, echo=FALSE, out.width="50%", align = 'center', fig.cap="Residuals, Normality and Linearity on Transformation or Not", echo=FALSE, include=FALSE,message=FALSE}
+summary(v1)
+summary(v2)
+```
+
+```{r chunk 13, echo=FALSE, out.width="50%", align = 'center', fig.cap="Residuals, Normality and Linearity on Transformation or Not", echo=FALSE, include=FALSE,message=FALSE}
+
+test <- test %>%
+  mutate(yhats = predict(v1,newdata = test))
+
+test <- test %>%
+  mutate(resids = Total.Cup.Points-yhats)
+
+test <- test %>%
+  mutate(yhats2 = predict(v2,newdata = test))
+
+test <- test %>%
+  mutate(resids2 = Total.Cup.Points-yhats2)
+
+
+hist_v1_resids <- test %>%
+  ggplot(aes(x = resids)) +
+  geom_histogram()
+
+scatter_v1_resids <- test %>%
+  ggplot(aes(yhats, resids)) +
+  geom_point() + 
+  stat_smooth()
+
+hist_v2_resids <- test %>%
+  ggplot(aes(x = resids2)) +
+  geom_histogram()
+
+scatter_v2_resids <- test %>%
+  ggplot(aes(yhats2, resids2)) +
+  geom_point() + 
+  stat_smooth()
+
+grid.arrange(hist_v1_resids, hist_v2_resids, scatter_v1_resids, scatter_v2_resids)
+
+
+```
+
+```{r r chunk 14, echo=FALSE, include=FALSE,message=FALSE}
+shapiro.test(test$resids)
+shapiro.test(test$resids2)
+
+
+install.packages('tseries')
+library(tseries)
+
+jarque.bera.test(test$resids)
+jarque.bera.test(test$resids2)
+
+```
+
+```{r r chunk 15, echo=FALSE, include=FALSE,message=FALSE}
+plot(v5)
+summary(v6)
+```
+
+```{r r chunk 16, echo=FALSE, include=FALSE,message=FALSE}
+vif(v5)
+alias(v5)
+coeftest(v5)
+```
+
+```{r r chunk 17, echo=FALSE, include=FALSE,message=FALSE}
+
+test <- test %>%
+  mutate(yhats3 = predict(v3,newdata = test))
+
+test <- test %>%
+  mutate(resids3 = Total.Cup.Points-yhats3)
+
+test <- test %>%
+  mutate(yhats4 = predict(v4,newdata = test))
+
+test <- test %>%
+  mutate(resids4 = Total.Cup.Points-yhats4)
+
+test <- test %>%
+  mutate(yhats5 = predict(v5,newdata = test))
+
+test <- test %>%
+  mutate(resids5 = Total.Cup.Points-yhats5)
+
+test <- test %>%
+  mutate(yhats6 = predict(v6,newdata = test))
+
+test <- test %>%
+  mutate(resids6 = Total.Cup.Points-yhats6)
+
+hist_v3_resids <- test %>%
+  ggplot(aes(x = resids3)) +
+  geom_histogram()
+
+scatter_v3_resids <- test %>%
+  ggplot(aes(yhats, resids3)) +
+  geom_point() + 
+  stat_smooth()
+
+hist_v4_resids <- test %>%
+  ggplot(aes(x = resids4)) +
+  geom_histogram()
+
+scatter_v4_resids <- test %>%
+  ggplot(aes(yhats, resids4)) +
+  geom_point() + 
+  stat_smooth()
+
+hist_v5_resids <- test %>%
+  ggplot(aes(x = resids5)) +
+  geom_histogram()+
+   labs(x='Chosen Model Residuals',y='Density', title = 'Residuals Histogram')+
+   theme(axis.text=element_text(size=5),
+        title=element_text(size=8))
+
+scatter_v5_resids <- test %>%
+  ggplot(aes(yhats, resids5)) +
+  geom_point() + 
+  stat_smooth()+
+   labs(x='Predicted Total Cup Score',y='Residuals',title = 'Correlation Residuals vs. Score')+
+   theme(axis.text=element_text(size=5),
+        title=element_text(size=8))
+
+
+hist_v6_resids <- test %>%
+  ggplot(aes(x = resids6)) +
+  geom_histogram()
+
+scatter_v6_resids <- test %>%
+  ggplot(aes(yhats, resids6)) +
+  geom_point() + 
+  stat_smooth()
+
+
+grid.arrange(hist_v3_resids, scatter_v3_resids)
+grid.arrange(hist_v4_resids, scatter_v4_resids)
+grid.arrange(hist_v5_resids, scatter_v5_resids)
+grid.arrange(hist_v6_resids, scatter_v6_resids)
+
+shapiro.test(test$resids5)
+summary(test$resids5)
+sd(test$resids5)
+
+```
+
+```{r chunk 18, echo=FALSE,include=FALSE,message=FALSE}
+test_predictions <- predict(v6, newdata = test)
+threshold <- 85 # adjust the threshold as needed
+binary_predictions <- ifelse(test_predictions > threshold, 1, 0)
+
+binary_actual <- ifelse(test$Total.Cup.Points > threshold, 1, 0)
+binary_predictions_factor <- factor(binary_predictions, levels = c(0, 1))
+binary_actual_factor <- factor(binary_actual, levels = c(0, 1))
+confusion_matrix <- confusionMatrix(binary_predictions_factor, binary_actual_factor)
+print(confusion_matrix)
+
+```
+
+
+# Introduction
+\indent
+The global specialty coffee market is expected to reach USD 71 billion by 2028 and accounts for about 20% of coffee exports worldwide.
+Specialty coffee is graded on a 100-point scale by a certified coffee taster (SCAA) or by a licensed Q Grader(CQI) where a score of 80 is the minimum qualification for a specialty coffee classification, 80-84.99 is considered "very good", 85-89.99 is "excellent", and 90-100 is "outstanding".
+Many factors impact the final taste of coffee, and these include the variety of the plant, the soil, the weather, the altitude where the coffee plant is grown, the processing of the coffee beans, and brewing practices.\
+In this report, we attempt to answer: "how do geographical features such as altitude, climate, and regional location affect coffee cup scores?" Altitude refers to the location of the farm growing the coffee plant, climate refers to whether the farm is in a fully tropical, partially tropical, or non-tropical climate.\
+Region refers to continental sub-regions such as "Central America," "South Central Asia." Cup score ranges from 0 to 100, with 80 being the minimum score for specialty coffee rating.\
+The goal of our project is to inform anyone intending to secure real estate and pursue specialty coffee market.
+Therefore, factors impacting the cultivation of specialty coffee unrelated to geography were lumped into our epsilon of unmeasured factors.\
+
+# Description of the Data
+The primary dataset we used was gathered from Kaggle, originally from Coffee Quality Database from the Coffee Quality Institute (CQI), courtesy of Buzzfeed data scientist James LeDoux.CQI is a worldwide, non-profit organization involved in coffee quality.\
+It created the Q Programme which is a system engaging both producers and buyers by certifying coffee grade, and offering opportunities for producers to access premium prices, and promote competitiveness.\
+This dataset includes the producers growing the coffee plants, the species of coffee, dates of harvest, beans processing methods, coffee beans qualities and defects, CQI grades, certification body, and altitude.\
+Each row of data represents one producer submission for grading.
+We also obtained a supplementary dataset from World Population Review to categorize countries as tropical, partially tropical, and non-tropical.
+Both datasets are observational.\
+
+# Key Concepts are Operationalized
+From our datasets, we picked as our key variables: "Altitude", "Subregion", and "Tropical".
+We performed independence analysis using a single-outcome causal graph.
+We determined that the causal pathways were strictly one-way from each key variable to the outcome "Total Cup Score".
+We also determined that there is no common ancestors between each key variable to the outcome.
+Alternative variables impacting "Total Cup Score" were put in our Epsilon.
+They included "Country" and "Bean Defects".\
+
+# Explanation of Key Modeling Decisions
+CQI data set presented a few relevant inconsistencies, specially on altitude our main interest, as the data appear to be manual.
+Incomplete and inconsistent observations were excluded. In order to assess validity, our team cross checked if the altitude data was reasonable within country and world level elevation measurements.\
+After wrangling, over 300 observations were dropped, and the total sampling size is composed of 1034 different scores.
+Those were divided into train and test set using a stratification method in order to assure representatives of each sub region to the training set.\
+The main interest of this research is to understand how in the observational gathered data altitude, geographical sub region and climate (being tropical, not tropical or partially tropical). Because of that, variables not related to these topics, or that showed common ancestors (such as country), were not included on the modeling section.\
+A glimpse into altitude and the CQI scores showed a positive correlation of `r round(cor(df$Total.Cup.Points, df$altitude_low_meters),2)`.
+Some specific regions are known for being coffee producers, as well as being from a warmer climate is also excepcted to be positive correlated with score, since it's a better growing condition for the coffee plant.
+
+```{r descriptive plots, align = 'center', fig.cap="Histogram and Correlation on Cup Points and Altitude", echo=FALSE, include=TRUE, message=FALSE}
+
+hist_score <- ggplot(df, aes(x=Total.Cup.Points)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white")+
+ geom_density(alpha=.2, fill="#FF6666")+ 
+ labs(x='Total Cup Points',y='Density',title = 'Total Cup Points')+
+ theme(axis.text=element_text(size=5),
+        title=element_text(size=8))
+
+
+hist_altitude <- ggplot(df, aes(x=altitude_low_meters)) + 
+ geom_histogram(aes(y=..density..), colour="black", fill="white")+
+ geom_density(alpha=.2, fill="#FF6666") +
+ labs(x='Total Cup Points',y='Density',title = 'Altitude')+
+   theme(axis.text=element_text(size=5),
+        title=element_text(size=8))
+
+
+correl_both <- ggplot(df, aes(x = altitude_low_meters, 
+                 y = Total.Cup.Points)) + 
+  geom_point( alpha = 0.8, size = 1) +
+  geom_smooth(method = "lm", se = F) +
+  ylab("Total Cup Points") +
+  xlab("Growing altitude (mts)") +
+ labs(x='Growing altitude (mts)',y='Total Cup Points',title = 'Correlation')+
+   theme(axis.text=element_text(size=5),
+        title=element_text(size=8))
+
+grid.arrange(hist_score, hist_altitude, correl_both, ncol=3, heights = c(1, 1, 1))
+
+```
+
+As the altitude variable has an skewed distribution (skewness = `r round(skewness(df$altitude_low_meters),2)`), log transformation was considered to our analysis in order to reduce skewness on altitude and error term. This transformation was discarded mainly due to not achieving the expected effect, increasing model complexity, and reducing explain ability. For the last model, an interaction term was also added, and later on discarded due to perfect collinearity in some of the terms and lack of significance of the remaining variables.\
+
+# Regression Models
+
+
+
+```{r r chunk viz, echo=FALSE,align = 'center', , fig.cap="Residual Analysis - Model (5)", include=TRUE,message=FALSE, out.width='90%'}
+grid.arrange(hist_v5_resids, scatter_v5_resids,ncol=2,heights = c(0.5,0.5))
+#shapiro.test(test$resids5)
+```
+Model number (5) was selected as Top Performing, even though as shown on the regression table below, it has a slightly lower R-squared, because it both has more significant variables and is easier to interpret. That said, as pictured on figure 2, model (5) still holds evidence for a non-normal, heavy tailed, and skewed errors as shown on the plots below. Shapiro Wilk and Jarque Bera tests also provided evidence in line by not rejecting the $H0$(Shapiro = `r shapiro.test(test$resids5)`, Jarque = `r jarque.bera.test(test$resids5)`). \
+```{r estimate models, echo=FALSE, include=TRUE, fig.cap="Stargazer Table", message=FALSE, results='asis', out.width='90%'}
+
+stargazer(v1, v2, v3, v4, v5, v6,df = F, font.size="small", float=FALSE,header=FALSE,title="Regression Table",dep.var.labels=c("Total Cup Scores"), covariate.labels=c("Altitude","log(Altitude)",
+"Eastern Africa Sub-Saharan Africa","Eastern Asia","South America Latin America","South-Eastern Asia", "Partially Tropical", "E.Afr. x Partially Tropical", "E.Asia x Partially Tropical", "S.LAm x Partially Tropical", "SE.Asia x Partially Tropical"))
+
+#v1<-lm(Total.Cup.Points ~ altitude_low_meters, data = train)
+#v2<-lm(Total.Cup.Points ~ log(altitude_low_meters), data = train)
+#v3<-lm(Total.Cup.Points ~ altitude_low_meters + subregion, data=train) #adding Variables
+#v4<-lm(Total.Cup.Points ~ altitude_low_meters + Tropical, data=train) #adding Variables
+#v5<-lm(Total.Cup.Points ~ altitude_low_meters + subregion + Tropical, data=train) #adding Variables
+#v6<-lm(Total.Cup.Points ~ altitude_low_meters + subregion + Tropical + subregion*Tropical, data=train) #adding interaction term
+
+```
+# Discussion of Results
+As for Statistical significance, testing our chosen model, an evaluation in terms of correlation accuracy (corr = 0.3465156) did not show strong predictability, and also, analyzing predictors and predicted confusion matrix, we could not recommend the use of our findings with statistical certainty.In terms of Practical Significance, through our regression analysis, we discovered that the most important location features to consider when working to improve cup points are subregion and tropical category. If a coffee is from Eastern Africa, Eastern Asia, or South America, it is likely associated with a higher cup score of 1.41, 1.95 and 0.96 respectively. If a coffee is from a particular tropical subregion, this is likely associated with a lower cup score of 1.21 points. This information can be used to help new coffee producers decide where they would like to produce their specialty coffees. Given the low R-squared, however, we would encourage further research before making a location decision based on these results.\
+
+# Limitations
+To assess our model limitations, we considered both statistical and structural limitations.
+For the statistical limitations there are 2 large-sample statistical assumptions we evaluated.
+We first evaluated whether the data was IID.
+We concluded that this assumption was not met given that the data collected primarily focused on top coffees.
+\>85% of the reviews had a total cup score \>80 pts.
+We believe this is not a true representation of the population and geographical clustering is also a factor.
+The second statistical assumption we evaluated was unique BLP/no perfect collinearity.
+For this assumption, we evaluated the coefficients of each of our models and noticed that R did not drop any of our variables, indicating no perfect collinearity.\
+This assumption also includes the requirement that a unique BLP exists, however our distributions had heavy tails so this assumption was not met.
+For structural limitations, we identified Omitted Variable bias and Right Hand Side bias.
+For omitted variable bias, there were several variables we omitted that may bias our results such as moisture and variety due to too many missing values.
+These variables are positively correlated to total cup points, so we would expect a bias moving away from zero and thus making our hypothesis tests overconfident.\
+For RHS bias, we took this into consideration in our initial model development.
+One of the initial models we considered was using country of origin and altitude to predict total cup points.
+We soon realized that this would result in altitude as a RHS variable, as country can impact altitude and both altitude and country can impact total cup points. To overcome this, we instead used subregion in our models.\
+
+# Conclusion
+Tying this back to the original research question "How do geographical features such as altitude, climate and regional location affect coffee cup scores?", we determined that our analysis was inconclusive and we are not confident that these features affect coffee cup scores.
+Our top performing model (using altitude, subregion and tropical to determine cup points) suggests that there is a positive relationship between cup points and altitude, a positive relationship between total cup points and subregions Eastern Africa, Eastern Asia, and South America, and a negative relationship between total cup points and being partially tropical.\
+However, even though this model had good statistical significance, we ultimately decided it is unreliable.\
+There are many other factors we did not consider in this OLS regression model largely due to missing or inconsistent data.\
+If we were to move forward with this research question, we would collect new data which accurately represents the coffee population and we would ensure data was complete and consistent across all reviewers.
+
